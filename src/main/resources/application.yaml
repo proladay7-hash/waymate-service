@@ -1,0 +1,5 @@
+spring:
+  application:
+    name: waymate-service
+  profiles:
+    active: local
