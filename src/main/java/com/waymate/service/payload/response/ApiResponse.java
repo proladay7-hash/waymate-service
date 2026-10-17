@@ -1,14 +1,15 @@
-package com.waymate.service.api;
+package com.waymate.service.payload.response;
 
 import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class HelloResponse {
-
+@Builder
+public class ApiResponse {
+	private boolean success;
 	private String message;
-	private String service;
 }
