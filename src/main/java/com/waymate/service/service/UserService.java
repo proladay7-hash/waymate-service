@@ -9,6 +9,7 @@ import com.waymate.service.payload.request.ResetPasswordRequest;
 import com.waymate.service.payload.request.SigninRequest;
 import com.waymate.service.payload.request.SignupRequest;
 import com.waymate.service.payload.request.UpdatePasswordRequest;
+import com.waymate.service.payload.request.VerifyOtpRequest;
 import com.waymate.service.payload.response.ApiResponse;
 import com.waymate.service.payload.response.AuthResponse;
 import com.waymate.service.payload.response.UserResponse;
@@ -16,6 +17,7 @@ import com.waymate.service.repository.UserRepository;
 import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import lombok.RequiredArgsConstructor;
@@ -138,6 +140,8 @@ public class UserService {
 	 * Returns a 1-day JWT session token.
 	 */
 	public AuthResponse googleLogin(GoogleLoginRequest request) {
+		boolean verified = false;
+
 		// 1. If Google authorization code is provided, exchange it for tokens using client_id and client_secret
 		if (request.getCode() != null && !request.getCode().isBlank()) {
 			try {
@@ -183,6 +187,7 @@ public class UserService {
 					String verifiedEmail = (String) tokenInfo.get("email");
 					if (verifiedEmail != null && !verifiedEmail.isBlank()) {
 						request.setEmail(verifiedEmail);
+						verified = true;
 					}
 					if (tokenInfo.get("name") != null) {
 						request.setName((String) tokenInfo.get("name"));
@@ -196,9 +201,12 @@ public class UserService {
 					log.info("Verified Google ID Token successfully for email: {}", request.getEmail());
 				}
 			} catch (Exception e) {
-				log.warn("Could not verify Google ID token with Google tokeninfo: {}. Proceeding with payload email.", e.getMessage());
+				log.warn("Could not verify Google ID token with Google tokeninfo: {}", e.getMessage());
 			}
-		} else if (request.getAccessToken() != null && !request.getAccessToken().isBlank()) {
+		}
+
+		// 3. Verify with Google UserInfo endpoint if accessToken is supplied and idToken was not verified
+		if (!verified && request.getAccessToken() != null && !request.getAccessToken().isBlank()) {
 			try {
 				var typeRef = new ParameterizedTypeReference<Map<String, Object>>() {};
 				Map<String, Object> userInfo = restClient.get()
@@ -211,6 +219,7 @@ public class UserService {
 					String verifiedEmail = (String) userInfo.get("email");
 					if (verifiedEmail != null && !verifiedEmail.isBlank()) {
 						request.setEmail(verifiedEmail);
+						verified = true;
 					}
 					if (userInfo.get("name") != null) {
 						request.setName((String) userInfo.get("name"));
@@ -224,8 +233,13 @@ public class UserService {
 					log.info("Verified Google Access Token successfully for email: {}", request.getEmail());
 				}
 			} catch (Exception e) {
-				log.warn("Could not fetch userinfo with Google access token: {}. Proceeding with payload email.", e.getMessage());
+				log.warn("Could not fetch userinfo with Google access token: {}", e.getMessage());
 			}
+		}
+
+		if (!verified) {
+			log.error("Google login rejected: No valid Google verification token provided or token verification failed for email: {}", request.getEmail());
+			throw new IllegalArgumentException("Google authentication failed: Email could not be verified by Google. A valid Google account token is required.");
 		}
 
 		String normalizedEmail = request.getEmail() != null ? request.getEmail().trim().toLowerCase() : "";
@@ -335,12 +349,47 @@ public class UserService {
 
 		otpCache.put(normalizedEmail, new OtpEntry(code, expiresAt));
 
-		// Send email via EmailService
-		emailService.sendPasswordResetOtp(normalizedEmail, code);
+		// Send email via EmailService asynchronously to provide instantaneous HTTP response
+		CompletableFuture.runAsync(() -> {
+			try {
+				emailService.sendPasswordResetOtp(normalizedEmail, code);
+			} catch (Exception e) {
+				log.error("Failed to dispatch password reset OTP email to {}: {}", normalizedEmail, e.getMessage());
+			}
+		});
 
 		return ApiResponse.builder()
 			.success(true)
 			.message("A 6-digit verification code has been sent to your email. The code expires in 1 minute.")
+			.build();
+	}
+
+	/**
+	 * Verify 6-digit OTP code before 1-minute expiration.
+	 */
+	public ApiResponse verifyOtp(VerifyOtpRequest request) {
+		String normalizedEmail = request.getEmail() != null ? request.getEmail().trim().toLowerCase() : "";
+		String code = request.getCode() != null ? request.getCode().trim() : "";
+
+		OtpEntry entry = otpCache.get(normalizedEmail);
+		if (entry == null) {
+			throw new IllegalArgumentException("No verification code requested for this email, or code was already used. Please request a new code.");
+		}
+
+		if (entry.isExpired()) {
+			otpCache.remove(normalizedEmail);
+			throw new IllegalArgumentException("Verification code has expired (valid for 1 minute). Please request a new code.");
+		}
+
+		if (!entry.code().equals(code)) {
+			throw new IllegalArgumentException("Invalid 6-digit verification code. Please check your email and try again.");
+		}
+
+		log.info("OTP verified successfully for email: {}", normalizedEmail);
+
+		return ApiResponse.builder()
+			.success(true)
+			.message("Verification code verified successfully.")
 			.build();
 	}
 

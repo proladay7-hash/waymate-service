@@ -6,6 +6,7 @@ import com.waymate.service.payload.request.ResetPasswordRequest;
 import com.waymate.service.payload.request.SigninRequest;
 import com.waymate.service.payload.request.SignupRequest;
 import com.waymate.service.payload.request.UpdatePasswordRequest;
+import com.waymate.service.payload.request.VerifyOtpRequest;
 import com.waymate.service.payload.response.ApiResponse;
 import com.waymate.service.payload.response.AuthResponse;
 import com.waymate.service.payload.response.UserResponse;
@@ -85,6 +86,16 @@ public class UserController {
 	@Operation(summary = "Forgot Password (Send OTP)", description = "Generates and sends a 6-digit OTP code expiring in 1 minute to the user's email.")
 	public ResponseEntity<ApiResponse> forgotPassword(@RequestBody ForgotPasswordRequest request) {
 		ApiResponse response = userService.sendForgotPasswordOtp(request);
+		return ResponseEntity.ok(response);
+	}
+
+	/**
+	 * Verify OTP - validates the 6-digit verification code against the 1-minute expiration cache.
+	 */
+	@PostMapping("/verify-otp")
+	@Operation(summary = "Verify OTP code", description = "Validates the 6-digit verification code before 1-minute expiration.")
+	public ResponseEntity<ApiResponse> verifyOtp(@RequestBody VerifyOtpRequest request) {
+		ApiResponse response = userService.verifyOtp(request);
 		return ResponseEntity.ok(response);
 	}
 
