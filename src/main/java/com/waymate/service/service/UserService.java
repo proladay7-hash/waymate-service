@@ -104,7 +104,7 @@ public class UserService {
 	 * Traditional User Signin.
 	 * Authenticates email and BCrypt password against Neo4j DB and issues a 1-day JWT token.
 	 */
-	public AuthResponse signin(SigninRequest request) {
+	public AuthResponse signIn(SigninRequest request) {
 		String normalizedEmail = request.getEmail() != null ? request.getEmail().trim().toLowerCase() : "";
 		User user = userRepository.findByEmail(normalizedEmail)
 			.orElseThrow(() -> new IllegalArgumentException("Invalid email or password"));

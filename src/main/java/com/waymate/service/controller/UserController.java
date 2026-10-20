@@ -32,7 +32,7 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/v1/user")
 @RequiredArgsConstructor
-@Tag(name = "User & Authentication", description = "Endpoints for Signup, Signin, Google OAuth, Password update & recovery")
+@Tag(name = "User & Authentication", description = "Endpoints for Signup, SignIn, Google OAuth, Password update & recovery")
 public class UserController {
 
 	private final UserService userService;
@@ -48,12 +48,12 @@ public class UserController {
 	}
 
 	/**
-	 * Traditional Signin - validates email and BCrypt password against Neo4j DB.
+	 * Traditional Signin - validates email and Bcrypt password against Neo4j DB.
 	 */
 	@PostMapping("/signin")
-	@Operation(summary = "Traditional Signin", description = "Authenticates email and password against Neo4j.")
-	public ResponseEntity<AuthResponse> signin(@RequestBody SigninRequest request) {
-		AuthResponse response = userService.signin(request);
+	@Operation(summary = "Traditional SignIn", description = "Authenticates email and password against Neo4j.")
+	public ResponseEntity<AuthResponse> signIn(@RequestBody SigninRequest request) {
+		AuthResponse response = userService.signIn(request);
 		return ResponseEntity.ok(response);
 	}
 

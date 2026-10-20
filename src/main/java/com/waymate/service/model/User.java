@@ -2,6 +2,7 @@ package com.waymate.service.model;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
 
 import lombok.AllArgsConstructor;
@@ -11,10 +12,7 @@ import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 import lombok.ToString;
 import lombok.experimental.SuperBuilder;
-import org.springframework.data.neo4j.core.schema.GeneratedValue;
-import org.springframework.data.neo4j.core.schema.Id;
-import org.springframework.data.neo4j.core.schema.Node;
-import org.springframework.data.neo4j.core.schema.Property;
+import org.springframework.data.neo4j.core.schema.*;
 
 /**
  * User Neo4j Node entity.
@@ -69,4 +67,7 @@ public class User extends BaseModel {
 
 	@Property("last_login")
 	private Instant lastLogin;
+
+	@Relationship(type = "HAS_USER", direction = Relationship.Direction.OUTGOING)
+	private List<Vehicle> vehicles;
 }
