@@ -36,6 +36,7 @@ import java.util.UUID;
 public class UserController {
 
 	private final UserService userService;
+	private final com.waymate.service.repository.UserRepository userRepository;
 
 	/**
 	 * Traditional Signup - creates a new User node in the Neo4j database.
@@ -127,6 +128,29 @@ public class UserController {
 	public ResponseEntity<UserResponse> getUserByEmail(@PathVariable String email) {
 		UserResponse response = userService.getUserByEmail(email);
 		return ResponseEntity.ok(response);
+	}
+
+	@lombok.Data @lombok.NoArgsConstructor @lombok.AllArgsConstructor @lombok.Builder
+	public static class UpdateLocationRequest {
+		private UUID userId;
+		private Double latitude;
+		private Double longitude;
+	}
+
+	/**
+	 * Update user GPS location.
+	 */
+	@PostMapping("/location")
+	@Operation(summary = "Update location", description = "Updates user's current GPS location coordinates.")
+	public ResponseEntity<ApiResponse> updateLocation(@RequestBody UpdateLocationRequest request) {
+		if (request.getUserId() != null) {
+			userRepository.findById(request.getUserId()).ifPresent(user -> {
+				user.setLatitude(request.getLatitude());
+				user.setLongitude(request.getLongitude());
+				userRepository.save(user);
+			});
+		}
+		return ResponseEntity.ok(ApiResponse.builder().success(true).message("Location updated").build());
 	}
 
 	@ExceptionHandler(IllegalArgumentException.class)

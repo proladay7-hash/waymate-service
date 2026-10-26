@@ -16,7 +16,7 @@ import org.springframework.data.neo4j.core.schema.*;
 
 /**
  * User Neo4j Node entity.
- * Represents registered riders and members in the Waymate ecosystem.
+ * Represents registered riders and members in the WayMate ecosystem.
  */
 @Node("User")
 @Data
@@ -67,6 +67,12 @@ public class User extends BaseModel {
 
 	@Property("last_login")
 	private Instant lastLogin;
+
+	@Property("latitude")
+	private Double latitude;
+
+	@Property("longitude")
+	private Double longitude;
 
 	@Relationship(type = "HAS_USER", direction = Relationship.Direction.OUTGOING)
 	private List<Vehicle> vehicles;

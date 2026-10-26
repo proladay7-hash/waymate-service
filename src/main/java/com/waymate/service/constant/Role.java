@@ -1,7 +1,7 @@
 package com.waymate.service.constant;
 
 /**
- * Predefined roles for Waymate users.
+ * Predefined roles for WayMate users.
  */
 public enum Role {
 	USER,

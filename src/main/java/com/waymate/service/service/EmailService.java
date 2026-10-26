@@ -32,15 +32,15 @@ public class EmailService {
 	 * @param otpCode 6-digit random verification code
 	 */
 	public void sendPasswordResetOtp(String toEmail, String otpCode) {
-		String subject = "Waymate - Password Reset Verification Code";
+		String subject = "WayMate - Password Reset Verification Code";
 
 		String plainBody = "Hello,\n\n"
-				+ "You have requested to reset your password for your Waymate account.\n"
+				+ "You have requested to reset your password for your WayMate account.\n"
 				+ "Your 6-digit verification code is: " + otpCode + "\n\n"
 				+ "⚠️ This code will expire in 1 minute (60 seconds).\n"
 				+ "If you did not request this, please ignore this email.\n\n"
 				+ "Best regards,\n"
-				+ "Waymate Team";
+				+ "WayMate Team";
 
 		String htmlBody = "<!DOCTYPE html>"
 				+ "<html>"
@@ -48,7 +48,7 @@ public class EmailService {
 				+ "<body style='margin:0;padding:24px;background-color:#080B11;font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",Roboto,sans-serif;color:#FFFFFF;'>"
 				+ "<div style='max-width:480px;margin:0 auto;background-color:#0E131F;border:1px solid #1E293B;border-radius:16px;overflow:hidden;padding:28px;'>"
 				+ "  <div style='text-align:center;margin-bottom:20px;'>"
-				+ "    <h1 style='color:#00A3E0;font-size:22px;letter-spacing:2px;margin:0;font-weight:900;'>WAYMATE</h1>"
+				+ "    <h1 style='color:#00A3E0;font-size:22px;letter-spacing:2px;margin:0;font-weight:900;'>WayMate</h1>"
 				+ "    <p style='color:#94A3B8;font-size:11px;margin:4px 0 0;letter-spacing:1px;font-weight:700;'>ADVENTURE PASSION HUB</p>"
 				+ "  </div>"
 				+ "  <h2 style='font-size:16px;color:#F8FAFC;margin:0 0 10px;'>Password Reset Request</h2>"

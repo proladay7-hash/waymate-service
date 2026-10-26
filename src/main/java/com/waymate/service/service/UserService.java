@@ -32,7 +32,7 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClient;
 
 /**
- * Core business service for User account operations and authentication in Waymate.
+ * Core business service for User account operations and authentication in WayMate.
  */
 @Service
 @RequiredArgsConstructor

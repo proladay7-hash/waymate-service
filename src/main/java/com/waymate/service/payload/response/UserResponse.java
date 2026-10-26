@@ -29,6 +29,8 @@ public class UserResponse {
 	private Instant lastLogin;
 	private Instant createdAt;
 	private Instant updatedAt;
+	private Double latitude;
+	private Double longitude;
 
 	public static UserResponse fromUser(User user) {
 		if (user == null) {
@@ -46,6 +48,8 @@ public class UserResponse {
 			.role(user.getRole())
 			.status(user.getStatus())
 			.lastLogin(user.getLastLogin())
+			.latitude(user.getLatitude())
+			.longitude(user.getLongitude())
 			.createdAt(user.getCreatedAt())
 			.updatedAt(user.getUpdatedAt())
 			.build();

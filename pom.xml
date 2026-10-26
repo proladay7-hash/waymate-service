@@ -12,7 +12,7 @@
 	<artifactId>waymate-service</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
 	<name>waymate-service</name>
-	<description>Waymate API backend</description>
+	<description>WayMate API backend</description>
 	<url/>
 	<licenses>
 		<license/>
@@ -40,6 +40,10 @@
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-websocket</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-data-neo4j</artifactId>
 		</dependency>
 		<dependency>
@@ -50,6 +54,7 @@
 		<dependency>
 			<groupId>org.projectlombok</groupId>
 			<artifactId>lombok</artifactId>
+			<version>1.18.36</version>
 			<optional>true</optional>
 		</dependency>
 		<dependency>
@@ -107,6 +112,7 @@
 								<path>
 									<groupId>org.projectlombok</groupId>
 									<artifactId>lombok</artifactId>
+									<version>1.18.36</version>
 								</path>
 							</annotationProcessorPaths>
 						</configuration>
@@ -122,6 +128,7 @@
 								<path>
 									<groupId>org.projectlombok</groupId>
 									<artifactId>lombok</artifactId>
+									<version>1.18.36</version>
 								</path>
 							</annotationProcessorPaths>
 						</configuration>

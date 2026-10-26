@@ -1,7 +1,7 @@
 package com.waymate.service.constant;
 
 /**
- * Account lifecycle status for Waymate users.
+ * Account lifecycle status for WayMate users.
  */
 public enum UserStatus {
 	ACTIVE,
