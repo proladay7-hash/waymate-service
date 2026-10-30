@@ -12,6 +12,10 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import java.time.Duration;
+
 /**
  * Service managing chat rooms, messages, group conversations, and delivery statuses.
  */
@@ -23,6 +27,8 @@ public class ChatService {
 	private final ChatRoomRepository chatRoomRepository;
 	private final MessageRepository messageRepository;
 	private final UserRepository userRepository;
+	private final StringRedisTemplate redisTemplate;
+	private final ObjectMapper objectMapper;
 
 	/**
 	 * Get all chat rooms (direct & group) that a user is a member of.
@@ -135,9 +141,38 @@ public class ChatService {
 
 	/**
 	 * Get message history for a specific room.
+	 * Checks Redis List (recent 50 messages) first; if miss, loads from Neo4j and hydrates Redis.
 	 */
 	public List<Message> getRoomMessages(UUID roomId) {
-		return messageRepository.findMessagesByRoomId(roomId);
+		String cacheKey = "chat:room:" + roomId + ":recent";
+		try {
+			List<String> cachedJsonList = redisTemplate.opsForList().range(cacheKey, 0, -1);
+			if (cachedJsonList != null && !cachedJsonList.isEmpty()) {
+				List<Message> cachedMessages = new ArrayList<>();
+				for (String json : cachedJsonList) {
+					cachedMessages.add(objectMapper.readValue(json, Message.class));
+				}
+				log.debug("Loaded {} messages from Redis cache for room {}", cachedMessages.size(), roomId);
+				return cachedMessages;
+			}
+		} catch (Exception e) {
+			log.warn("Redis chat history cache read error for room {}: {}", roomId, e.getMessage());
+		}
+
+		// Cache miss: Load from Neo4j
+		List<Message> dbMessages = messageRepository.findMessagesByRoomId(roomId);
+		if (dbMessages != null && !dbMessages.isEmpty()) {
+			try {
+				int start = Math.max(0, dbMessages.size() - 50);
+				for (Message m : dbMessages.subList(start, dbMessages.size())) {
+					redisTemplate.opsForList().rightPush(cacheKey, objectMapper.writeValueAsString(m));
+				}
+				redisTemplate.expire(cacheKey, Duration.ofDays(14));
+			} catch (Exception e) {
+				log.warn("Failed to hydrate Redis chat list for room {}: {}", roomId, e.getMessage());
+			}
+		}
+		return dbMessages != null ? dbMessages : Collections.emptyList();
 	}
 
 	/**
@@ -150,7 +185,7 @@ public class ChatService {
 	}
 
 	/**
-	 * Persist a new message and update chat room last activity.
+	 * Persist a new message, update chat room last activity, and push to Redis List recent cache.
 	 */
 	public Message saveMessage(Message message) {
 		if (message.getCreatedAt() == null) {
@@ -162,8 +197,27 @@ public class ChatService {
 		if (message.getReadByUserIds() == null) {
 			message.setReadByUserIds(new ArrayList<>());
 		}
+		if (message.getSenderId() != null) {
+			String senderStr = message.getSenderId().toString();
+			if (!message.getReadByUserIds().contains(senderStr)) {
+				message.getReadByUserIds().add(senderStr);
+			}
+		}
 
 		Message savedMessage = messageRepository.save(message);
+
+		// Cache recent message into Redis List: LTRIM -50 -1 keeps last 50 messages
+		if (savedMessage.getRoomId() != null) {
+			String cacheKey = "chat:room:" + savedMessage.getRoomId() + ":recent";
+			try {
+				String json = objectMapper.writeValueAsString(savedMessage);
+				redisTemplate.opsForList().rightPush(cacheKey, json);
+				redisTemplate.opsForList().trim(cacheKey, -50, -1);
+				redisTemplate.expire(cacheKey, Duration.ofDays(14));
+			} catch (Exception e) {
+				log.warn("Failed to push message to Redis list {}: {}", cacheKey, e.getMessage());
+			}
+		}
 
 		// Update room last message info
 		chatRoomRepository.findById(message.getRoomId()).ifPresent(room -> {

@@ -35,6 +35,12 @@ public class NotificationService {
 		String referenceId,
 		String metadataJson
 	) {
+		// Do not push notifications for user's own actions (self-posts, self-comments, self-likes)
+		if (userId != null && senderId != null && userId.equals(senderId)) {
+			log.debug("Skipping self-notification for user {}", userId);
+			return null;
+		}
+
 		Notification n = Notification.builder()
 			.userId(userId)
 			.title(title)

@@ -10,8 +10,8 @@ WORKDIR /build
 COPY pom.xml mvnw ./
 COPY .mvn .mvn
 
-# Make wrapper executable
-RUN chmod +x ./mvnw
+# Make wrapper executable (handling CRLF line endings from Windows)
+RUN sed -i 's/\r$//' ./mvnw && chmod +x ./mvnw
 
 # Copy source code and build executable jar
 COPY src src
@@ -35,10 +35,13 @@ COPY --from=builder /build/target/waymate-service-*.jar /app/waymate-service.jar
 ENV SPRING_PROFILES_ACTIVE=local \
     SERVER_PORT=8781 \
     SERVER_ADDRESS=0.0.0.0 \
-    NEO4J_HOST=host.docker.internal \
+    NEO4J_HOST=neo4j \
     NEO4J_PORT=7687 \
     NEO4J_USERNAME=neo4j \
     NEO4J_PASSWORD=!Honda_cbr650r \
+    REDIS_HOST=redis \
+    REDIS_PORT=6379 \
+    REDIS_PASSWORD= \
     AI_AGENT_URL=http://waymate-agent:8000
 
 EXPOSE 8781

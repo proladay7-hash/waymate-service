@@ -14,6 +14,8 @@ import org.springframework.stereotype.Service;
 
 /**
  * Service managing rider community social posts, likes, comments, and media sharing.
+ * Backed by Redis fast in-memory counters, Write-behind async persistence, ZSET feed index,
+ * and anti-spam rate limiting.
  */
 @Service
 @RequiredArgsConstructor
@@ -24,26 +26,41 @@ public class PostService {
 	private final PostCommentRepository postCommentRepository;
 	private final NotificationService notificationService;
 	private final com.waymate.service.repository.UserRepository userRepository;
+	private final RedisPostCounterService redisPostCounterService;
+	private final RedisFeedService redisFeedService;
+	private final RedisRateLimiterService redisRateLimiterService;
 
 	/**
-	 * Get all active posts for the community feed.
+	 * Get all active posts for the community feed using Redis ZSET (ZREVRANGE).
 	 */
 	public List<Post> getCommunityFeed() {
-		return postRepository.findAllActivePosts();
+		return getCommunityFeed(0, 50, null);
+	}
+
+	public List<Post> getCommunityFeed(int page, int size, UUID viewerUserId) {
+		return redisFeedService.getCommunityFeed(page, size, viewerUserId);
 	}
 
 	/**
-	 * Get all posts created by a specific rider.
+	 * Get all posts created by a specific rider using Redis author feed ZSET.
 	 */
 	public List<Post> getPostsByAuthor(UUID authorId) {
-		return postRepository.findPostsByAuthorId(authorId);
+		return getPostsByAuthor(authorId, 0, 50, null);
+	}
+
+	public List<Post> getPostsByAuthor(UUID authorId, int page, int size, UUID viewerUserId) {
+		return redisFeedService.getUserFeed(authorId, page, size, viewerUserId);
 	}
 
 	/**
 	 * Publish a new social ride post.
+	 * Rate limited via Redis (Requirement D) and indexed to feed ZSET (Requirement C).
 	 */
 	public Post createPost(UUID authorId, String authorName, String authorAvatar, String content,
 	                       List<String> mediaUrls, String tripId, String locationName) {
+		// Rate limiting: max 5 posts per minute
+		redisRateLimiterService.checkPostCreation(authorId);
+
 		Post post = Post.builder()
 			.authorId(authorId)
 			.authorName(authorName)
@@ -60,60 +77,58 @@ public class PostService {
 			.updatedAt(Instant.now())
 			.build();
 
-		return postRepository.save(post);
+		Post saved = postRepository.save(post);
+
+		// Index into Redis Sorted Set (ZSET) with creation timestamp as score
+		redisFeedService.addPostToFeed(saved);
+
+		return saved;
 	}
 
 	/**
 	 * Toggle Like/Unlike on a post.
-	 * Returns updated post.
+	 * Utilizes Redis Set (SADD/SREM) and atomic INCR/DECR with 60-second Write-Behind (Requirement B),
+	 * protected by Redis Rate Limiter (Requirement D).
 	 */
 	public Post toggleLike(UUID postId, UUID userId) {
+		// Rate limiting: max 60 likes per minute
+		redisRateLimiterService.checkPostLike(userId);
+
+		// Execute atomic toggle on Redis RAM
+		RedisPostCounterService.ToggleLikeResult result = redisPostCounterService.toggleLike(postId, userId);
+
 		Post post = postRepository.findById(postId)
 			.orElseThrow(() -> new IllegalArgumentException("Post not found with id: " + postId));
 
-		List<String> likedUsers = post.getLikedByUserIds();
-		if (likedUsers == null) {
-			likedUsers = new ArrayList<>();
-		}
-
-		String uidStr = userId.toString();
-		if (likedUsers.contains(uidStr)) {
-			likedUsers.remove(uidStr);
-			post.setLikeCount(Math.max(0, (post.getLikeCount() != null ? post.getLikeCount() : 1) - 1));
-		} else {
-			likedUsers.add(uidStr);
-			post.setLikeCount((post.getLikeCount() != null ? post.getLikeCount() : 0) + 1);
-
-			// Produce notification to post author if not self
-			if (post.getAuthorId() != null && !post.getAuthorId().equals(userId)) {
-				String likerName = userRepository.findById(userId).map(com.waymate.service.model.User::getName).orElse("A rider");
-				String likerAvatar = userRepository.findById(userId).map(com.waymate.service.model.User::getAvatar).orElse(null);
-				try {
-					notificationService.createNotification(
-						post.getAuthorId(),
-						likerName + " liked your post ❤️",
-						likerName + " reacted to your ride story.",
-						"POST_LIKE",
-						userId,
-						likerName,
-						likerAvatar,
-						postId.toString(),
-						null
-					);
-				} catch (Exception e) {
-					log.warn("Failed to notify post like: {}", e.getMessage());
-				}
+		// Notify post author if newly liked and not self
+		if (result.isLiked() && post.getAuthorId() != null && !post.getAuthorId().equals(userId)) {
+			String likerName = userRepository.findById(userId).map(com.waymate.service.model.User::getName).orElse("A rider");
+			String likerAvatar = userRepository.findById(userId).map(com.waymate.service.model.User::getAvatar).orElse(null);
+			try {
+				notificationService.createNotification(
+					post.getAuthorId(),
+					likerName + " liked your post ❤️",
+					likerName + " reacted to your ride story.",
+					"POST_LIKE",
+					userId,
+					likerName,
+					likerAvatar,
+					postId.toString(),
+					null
+				);
+			} catch (Exception e) {
+				log.warn("Failed to notify post like: {}", e.getMessage());
 			}
 		}
 
-		post.setLikedByUserIds(likedUsers);
-		post.setUpdatedAt(Instant.now());
-		return postRepository.save(post);
+		// Return post populated with live in-memory Redis counters
+		redisPostCounterService.populateLiveCounters(post, userId);
+		return post;
 	}
 
 	/**
-	/**
 	 * Add a comment or reply to a post.
+	 * Increments comment count atomically via Redis (Requirement B) and checks rate limits (Requirement D).
 	 */
 	public PostComment addComment(
 		UUID postId,
@@ -126,6 +141,9 @@ public class PostService {
 		UUID replyToUserId,
 		String replyToUserName
 	) {
+		// Rate limiting: max 20 comments per minute
+		redisRateLimiterService.checkPostComment(authorId);
+
 		Post post = postRepository.findById(postId)
 			.orElseThrow(() -> new IllegalArgumentException("Post not found with id: " + postId));
 
@@ -161,10 +179,8 @@ public class PostService {
 
 		PostComment savedComment = postCommentRepository.save(comment);
 
-		// Increment comment count on Post
-		post.setCommentCount((post.getCommentCount() != null ? post.getCommentCount() : 0) + 1);
-		post.setUpdatedAt(Instant.now());
-		postRepository.save(post);
+		// Atomically increment comment counter in Redis RAM (flushed periodically by Write-Behind worker)
+		redisPostCounterService.incrementComment(postId);
 
 		String preview = (content != null && content.length() > 60) ? content.substring(0, 57) + "..." : (content != null ? content : "");
 
@@ -271,15 +287,14 @@ public class PostService {
 	}
 
 	/**
-	 * Increment share count and notify author.
+	 * Increment share count atomically on Redis and notify author.
 	 */
 	public Post incrementShare(UUID postId) {
 		Post post = postRepository.findById(postId)
 			.orElseThrow(() -> new IllegalArgumentException("Post not found with id: " + postId));
 
-		post.setShareCount((post.getShareCount() != null ? post.getShareCount() : 0) + 1);
-		post.setUpdatedAt(Instant.now());
-		Post saved = postRepository.save(post);
+		// Increment share count atomically on Redis (Requirement B)
+		redisPostCounterService.incrementShare(postId);
 
 		if (post.getAuthorId() != null) {
 			try {
@@ -299,6 +314,7 @@ public class PostService {
 			}
 		}
 
-		return saved;
+		redisPostCounterService.populateLiveCounters(post, null);
+		return post;
 	}
 }

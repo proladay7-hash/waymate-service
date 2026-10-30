@@ -14,22 +14,26 @@ import org.springframework.stereotype.Repository;
 @Repository
 public interface MessageRepository extends Neo4jRepository<Message, UUID> {
 
-	@Query("MATCH (m:Message) WHERE m.room_id = $roomId AND (m.is_deleted = false OR m.is_deleted IS NULL) " +
+	@Query("MATCH (m:Message) WHERE toString(m.room_id) = toString($roomId) AND (m.is_deleted = false OR m.is_deleted IS NULL) " +
 	       "RETURN m ORDER BY m.created_at ASC")
 	List<Message> findMessagesByRoomId(@Param("roomId") UUID roomId);
 
-	@Query("MATCH (m:Message) WHERE m.room_id = $roomId AND (m.is_deleted = false OR m.is_deleted IS NULL) " +
+	@Query("MATCH (m:Message) WHERE toString(m.room_id) = toString($roomId) AND (m.is_deleted = false OR m.is_deleted IS NULL) " +
 	       "RETURN m ORDER BY m.created_at DESC LIMIT $limit")
 	List<Message> findRecentMessagesByRoomId(@Param("roomId") UUID roomId, @Param("limit") int limit);
 
-	@Query("MATCH (m:Message) WHERE m.room_id = $roomId AND m.sender_id <> $userId " +
+	@Query("MATCH (m:Message) WHERE toString(m.room_id) = toString($roomId) " +
+	       "AND toString(m.sender_id) <> toString($userId) " +
+	       "AND NOT (toString($userId) IN [uid IN coalesce(m.read_by_user_ids, []) | toString(uid)]) " +
 	       "AND (m.status <> 'READ' OR m.status IS NULL) " +
 	       "AND (m.is_deleted = false OR m.is_deleted IS NULL) " +
 	       "RETURN count(m)")
 	long countUnreadMessagesByRoom(@Param("roomId") UUID roomId, @Param("userId") UUID userId);
 
-	@Query("MATCH (r:ChatRoom) WHERE $userIdStr IN r.member_ids " +
-	       "MATCH (m:Message) WHERE m.room_id = r.id AND m.sender_id <> $userId " +
+	@Query("MATCH (r:ChatRoom) WHERE toString($userIdStr) IN [m IN coalesce(r.member_ids, []) | toString(m)] " +
+	       "MATCH (m:Message) WHERE toString(m.room_id) = toString(r.id) " +
+	       "AND toString(m.sender_id) <> toString($userId) " +
+	       "AND NOT (toString($userId) IN [uid IN coalesce(m.read_by_user_ids, []) | toString(uid)]) " +
 	       "AND (m.status <> 'READ' OR m.status IS NULL) " +
 	       "AND (m.is_deleted = false OR m.is_deleted IS NULL) " +
 	       "RETURN count(m)")

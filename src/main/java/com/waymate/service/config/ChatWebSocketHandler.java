@@ -19,9 +19,14 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
+import com.waymate.service.service.RedisChatPublisher;
+import com.waymate.service.service.RedisRateLimiterService;
+import org.springframework.context.annotation.Lazy;
+
 /**
  * High-performance WebSocket handler for real-time chat messaging, delivery status updates,
  * typing indicators, and @WayMate AI Assistant mentions.
+ * Scales horizontally across multiple servers via Redis Pub/Sub.
  */
 @Component
 @Slf4j
@@ -30,14 +35,20 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 	private final ChatService chatService;
 	private final AiAgentBridgeService aiAgentBridgeService;
 	private final ObjectMapper objectMapper;
+	private final RedisChatPublisher redisChatPublisher;
+	private final RedisRateLimiterService rateLimiterService;
 
 	public ChatWebSocketHandler(
 		ChatService chatService,
 		AiAgentBridgeService aiAgentBridgeService,
-		@org.springframework.beans.factory.annotation.Autowired(required = false) ObjectMapper objectMapper
+		@org.springframework.beans.factory.annotation.Autowired(required = false) ObjectMapper objectMapper,
+		@Lazy RedisChatPublisher redisChatPublisher,
+		RedisRateLimiterService rateLimiterService
 	) {
 		this.chatService = chatService;
 		this.aiAgentBridgeService = aiAgentBridgeService;
+		this.redisChatPublisher = redisChatPublisher;
+		this.rateLimiterService = rateLimiterService;
 		if (objectMapper != null) {
 			this.objectMapper = objectMapper;
 		} else {
@@ -199,9 +210,21 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 
 	private void handleSendMessage(WebSocketSession session, JsonNode json) {
 		try {
+			String senderIdStr = json.get("senderId").asText();
+
+			// Rate Limiting check (anti-spam): max 30 chat messages per minute
+			if (!rateLimiterService.allowChatMessage(senderIdStr)) {
+				log.warn("Rate limit exceeded for chat sender {}", senderIdStr);
+				session.sendMessage(new TextMessage(objectMapper.writeValueAsString(Map.of(
+					"type", "ERROR",
+					"code", "RATE_LIMIT_EXCEEDED",
+					"message", "You are sending messages too quickly. Please wait a moment."
+				))));
+				return;
+			}
+
 			String roomIdStr = json.get("roomId").asText();
 			UUID roomId = UUID.fromString(roomIdStr);
-			String senderIdStr = json.get("senderId").asText();
 			UUID senderId = UUID.fromString(senderIdStr);
 			String senderName = json.has("senderName") ? json.get("senderName").asText() : "Rider";
 			String senderAvatar = json.has("senderAvatar") ? json.get("senderAvatar").asText() : null;
@@ -227,12 +250,15 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 
 			Message saved = chatService.saveMessage(msg);
 
-			// Broadcast to room
-			Map<String, Object> broadcastPacket = Map.of(
-				"type", "NEW_MESSAGE",
-				"message", saved
-			);
-			broadcastToRoom(roomIdStr, broadcastPacket);
+			// Publish to Redis Pub/Sub cluster (RedisChatSubscriber will deliver to local sessions on all servers)
+			boolean published = redisChatPublisher.publishNewMessage(roomIdStr, null, saved);
+			if (!published) {
+				// Fallback to local broadcast only if Redis publication failed
+				broadcastToLocalRoom(roomIdStr, null, Map.of(
+					"type", "NEW_MESSAGE",
+					"message", saved
+				));
+			}
 
 			// Check for @WayMate AI Assistant mention!
 			if (aiAgentBridgeService.containsAiMention(content)) {
@@ -247,12 +273,16 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 	private void triggerAiAssistantReply(UUID roomId, String userText, String userId) {
 		String roomIdStr = roomId.toString();
 
-		// Broadcast AI typing indicator
-		broadcastToRoom(roomIdStr, Map.of(
+		// Broadcast AI typing indicator via Redis Pub/Sub
+		Map<String, Object> typingOnPacket = Map.of(
 			"type", "AI_TYPING",
 			"roomId", roomIdStr,
 			"isTyping", true
-		));
+		);
+		boolean typingPub = redisChatPublisher.publishRoomEvent(roomIdStr, null, "AI_TYPING", typingOnPacket);
+		if (!typingPub) {
+			broadcastToLocalRoom(roomIdStr, null, typingOnPacket);
+		}
 
 		CompletableFuture.runAsync(() -> {
 			try {
@@ -274,21 +304,28 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 
 				Message savedAiMsg = chatService.saveMessage(aiMsg);
 
-				// Broadcast AI Message to room
-				broadcastToRoom(roomIdStr, Map.of(
-					"type", "NEW_MESSAGE",
-					"message", savedAiMsg
-				));
+				// Broadcast AI Message across all servers via Redis Pub/Sub
+				boolean aiMsgPub = redisChatPublisher.publishNewMessage(roomIdStr, null, savedAiMsg);
+				if (!aiMsgPub) {
+					broadcastToLocalRoom(roomIdStr, null, Map.of(
+						"type", "NEW_MESSAGE",
+						"message", savedAiMsg
+					));
+				}
 
 			} catch (Exception e) {
 				log.error("Error generating AI assistant response: {}", e.getMessage());
 			} finally {
 				// Turn off AI typing indicator
-				broadcastToRoom(roomIdStr, Map.of(
+				Map<String, Object> typingOffPacket = Map.of(
 					"type", "AI_TYPING",
 					"roomId", roomIdStr,
 					"isTyping", false
-				));
+				);
+				boolean typingOffPub = redisChatPublisher.publishRoomEvent(roomIdStr, null, "AI_TYPING", typingOffPacket);
+				if (!typingOffPub) {
+					broadcastToLocalRoom(roomIdStr, null, typingOffPacket);
+				}
 			}
 		});
 	}
@@ -313,7 +350,10 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 			);
 
 			if (roomIdStr != null) {
-				broadcastToRoom(roomIdStr, statusPacket);
+				boolean statusPub = redisChatPublisher.publishRoomEvent(roomIdStr, session.getId(), "MESSAGE_STATUS", statusPacket);
+				if (!statusPub) {
+					broadcastToLocalRoom(roomIdStr, session.getId(), statusPacket);
+				}
 			}
 		} catch (Exception e) {
 			log.error("Failed to handle MESSAGE_STATUS: {}", e.getMessage());
@@ -335,17 +375,34 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 				"isTyping", isTyping
 			);
 
-			broadcastToRoomExcept(roomIdStr, session.getId(), typingPacket);
+			boolean typingPub = redisChatPublisher.publishRoomEvent(roomIdStr, session.getId(), "USER_TYPING", typingPacket);
+			if (!typingPub) {
+				broadcastToLocalRoom(roomIdStr, session.getId(), typingPacket);
+			}
 		} catch (Exception e) {
 			log.error("Failed to handle TYPING: {}", e.getMessage());
 		}
 	}
 
 	public void broadcastToRoom(String roomId, Map<String, Object> payload) {
-		broadcastToRoomExcept(roomId, null, payload);
+		boolean pub = redisChatPublisher.publishRoomEvent(roomId, null, "ROOM_BROADCAST", payload);
+		if (!pub) {
+			broadcastToLocalRoom(roomId, null, payload);
+		}
 	}
 
 	public void broadcastToRoomExcept(String roomId, String excludedSessionId, Map<String, Object> payload) {
+		boolean pub = redisChatPublisher.publishRoomEvent(roomId, excludedSessionId, "ROOM_BROADCAST", payload);
+		if (!pub) {
+			broadcastToLocalRoom(roomId, excludedSessionId, payload);
+		}
+	}
+
+	/**
+	 * Delivers WebSocket packet to active sessions connected directly to THIS server instance.
+	 * Invoked locally or from RedisChatSubscriber when cross-server events arrive.
+	 */
+	public void broadcastToLocalRoom(String roomId, String excludedSessionId, Map<String, Object> payload) {
 		Set<String> targetSessions = new HashSet<>();
 
 		// 1. All active sessions viewing this conversation screen
@@ -355,8 +412,6 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 		}
 
 		// 2. All active sessions belonging to any member of this chat room
-		// This guarantees that all users receive the push notification and unread counter update
-		// immediately, even when they are on Home, Garage, Social, Profile, or Chat List screens!
 		try {
 			UUID rId = UUID.fromString(roomId);
 			List<String> memberIds = chatService.getRoomMemberIds(rId);
@@ -386,22 +441,25 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 				}
 			}
 		} catch (Exception e) {
-			log.error("Failed to broadcast to room {}: {}", roomId, e.getMessage());
+			log.error("Failed to broadcast locally to room {}: {}", roomId, e.getMessage());
 		}
 	}
 
 	/**
-	 * Public helper to broadcast a persisted new message to all room members.
+	 * Public helper to broadcast a persisted new message to all room members cluster-wide.
 	 */
 	public void broadcastNewMessage(UUID roomId, Message message) {
-		broadcastToRoom(roomId.toString(), Map.of(
-			"type", "NEW_MESSAGE",
-			"message", message
-		));
+		boolean published = redisChatPublisher.publishNewMessage(roomId.toString(), null, message);
+		if (!published) {
+			broadcastToLocalRoom(roomId.toString(), null, Map.of(
+				"type", "NEW_MESSAGE",
+				"message", message
+			));
+		}
 	}
 
 	/**
-	 * Public helper to broadcast an urgent SOS emergency alert to all connected rider sessions.
+	 * Broadcasts urgent SOS emergency alert to all connected rider sessions locally and cluster-wide.
 	 */
 	public void broadcastSosAlert(Sos sos, List<UUID> targetUserIds) {
 		try {
@@ -424,50 +482,36 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 				"sos", sosData
 			);
 
+			// Publish to Redis cluster (subscriber handles delivery to local sessions on all instances)
+			boolean published = redisChatPublisher.publishSosAlert(packet);
+			if (!published) {
+				// Deliver to local sessions only if Redis publication failed
+				broadcastToLocalSos(packet);
+			}
+
+			log.info("Broadcasted SOS_ALERT [id={}] across Redis cluster", sos.getId());
+		} catch (Exception e) {
+			log.error("Failed to broadcast SOS_ALERT: {}", e.getMessage(), e);
+		}
+	}
+
+	/**
+	 * Delivers SOS emergency alert to local sessions on THIS server.
+	 */
+	public void broadcastToLocalSos(Map<String, Object> packet) {
+		try {
 			String jsonString = objectMapper.writeValueAsString(packet);
 			TextMessage textMsg = new TextMessage(jsonString);
 
-			Set<String> targetSessions = new HashSet<>();
-
-			if (targetUserIds != null && !targetUserIds.isEmpty()) {
-				for (UUID uid : targetUserIds) {
-					Set<String> sessions = userToSessions.get(uid.toString());
-					if (sessions != null) {
-						targetSessions.addAll(sessions);
-					}
-				}
-			} else {
-				// Broadcast to all active sessions except the creator
-				String creatorIdStr = sos.getUserId() != null ? sos.getUserId().toString() : null;
-				for (Map.Entry<String, String> entry : sessionToUser.entrySet()) {
-					if (creatorIdStr == null || !creatorIdStr.equals(entry.getValue())) {
-						targetSessions.add(entry.getKey());
-					}
-				}
-			}
-
-			// If some connected sessions have not yet identified, also include them if targetUserIds is null
-			if (targetUserIds == null || targetUserIds.isEmpty()) {
-				targetSessions.addAll(activeSessions.keySet());
-				if (sos.getUserId() != null) {
-					Set<String> creatorSessions = userToSessions.get(sos.getUserId().toString());
-					if (creatorSessions != null) {
-						targetSessions.removeAll(creatorSessions);
-					}
-				}
-			}
-
-			for (String sid : targetSessions) {
-				WebSocketSession ws = activeSessions.get(sid);
+			for (WebSocketSession ws : activeSessions.values()) {
 				if (ws != null && ws.isOpen()) {
 					synchronized (ws) {
 						ws.sendMessage(textMsg);
 					}
 				}
 			}
-			log.info("Broadcasted SOS_ALERT [id={}] to {} active sessions", sos.getId(), targetSessions.size());
 		} catch (Exception e) {
-			log.error("Failed to broadcast SOS_ALERT: {}", e.getMessage(), e);
+			log.error("Failed to broadcast local SOS: {}", e.getMessage());
 		}
 	}
 }

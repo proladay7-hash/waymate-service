@@ -57,20 +57,30 @@ public class PostController {
 
 	/**
 	 * Get community feed posts.
+	 * Powered by Redis ZSET (ZREVRANGE) with real-time in-memory counters.
 	 */
 	@GetMapping
-	@Operation(summary = "Get community feed", description = "Returns active ride posts in reverse chronological order.")
-	public ResponseEntity<List<Post>> getCommunityFeed() {
-		return ResponseEntity.ok(postService.getCommunityFeed());
+	@Operation(summary = "Get community feed", description = "Returns active ride posts in reverse chronological order via Redis ZSET.")
+	public ResponseEntity<List<Post>> getCommunityFeed(
+		@RequestParam(defaultValue = "0") int page,
+		@RequestParam(defaultValue = "20") int size,
+		@RequestParam(required = false) UUID viewerId
+	) {
+		return ResponseEntity.ok(postService.getCommunityFeed(page, size, viewerId));
 	}
 
 	/**
 	 * Get posts by a specific user.
 	 */
 	@GetMapping("/user/{userId}")
-	@Operation(summary = "Get user posts", description = "Returns all posts authored by a specific user.")
-	public ResponseEntity<List<Post>> getUserPosts(@PathVariable UUID userId) {
-		return ResponseEntity.ok(postService.getPostsByAuthor(userId));
+	@Operation(summary = "Get user posts", description = "Returns all posts authored by a specific user via Redis ZSET.")
+	public ResponseEntity<List<Post>> getUserPosts(
+		@PathVariable UUID userId,
+		@RequestParam(defaultValue = "0") int page,
+		@RequestParam(defaultValue = "20") int size,
+		@RequestParam(required = false) UUID viewerId
+	) {
+		return ResponseEntity.ok(postService.getPostsByAuthor(userId, page, size, viewerId));
 	}
 
 	/**
